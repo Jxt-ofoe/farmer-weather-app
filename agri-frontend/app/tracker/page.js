@@ -15,6 +15,15 @@ export default function TrackerDashboard() {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState({ text: '', type: '' }); // type: 'success' | 'error'
 
+  // Location/Permissions states
+  const [isLocating, setIsLocating] = useState(false);
+  const [savedLocation, setSavedLocation] = useState(null);
+  const [showLocationSettingsGuide, setShowLocationSettingsGuide] = useState(false);
+
+  // Forms states
+  const [activeFormTab, setActiveFormTab] = useState('yield'); // 'yield' | 'expense'
+  const [activeLogTab, setActiveLogTab] = useState('yield'); // 'yield' | 'expense'
+
   // Input states
   const [yieldCrop, setYieldCrop] = useState('Corn');
   const [yieldQuantity, setYieldQuantity] = useState('');
@@ -26,12 +35,20 @@ export default function TrackerDashboard() {
   // Local stats refresh trigger
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  // Load username
+  // Load user configurations
   useEffect(() => {
     const savedUsername = localStorage.getItem('agri_username');
     if (savedUsername) {
       setUsername(savedUsername);
       setIsOnboarded(true);
+      const loc = localStorage.getItem('agri_last_location');
+      if (loc) {
+        try {
+          setSavedLocation(JSON.parse(loc));
+        } catch (e) {
+          console.error(e);
+        }
+      }
     }
   }, []);
 
@@ -44,8 +61,7 @@ export default function TrackerDashboard() {
     triggerSync,
     updateQueueStats
   } = useOfflineSync(username, () => {
-    // Callback when records sync successfully
-    showStatusMessage('✅ Offline data successfully synced!', 'success');
+    showStatusMessage('✅ Offline logs synchronized with database!', 'success');
     fetchData();
   });
 
@@ -54,7 +70,6 @@ export default function TrackerDashboard() {
     if (!username) return;
     setIsLoading(true);
     try {
-      // Fetch prices (with static fallbacks if offline/api error)
       const pricesRes = await fetch('/api/market-prices').catch(() => null);
       let pricesMap = {
         'Corn': 0.18,
@@ -76,7 +91,6 @@ export default function TrackerDashboard() {
       }
       setMarketPrices(pricesMap);
 
-      // Fetch user's synced yields & expenses
       const dataRes = await fetch(`/api/tracker-data?username=${username}`).catch(() => null);
       if (dataRes && dataRes.ok) {
         const dataJson = await dataRes.json();
@@ -104,62 +118,99 @@ export default function TrackerDashboard() {
     }, 5000);
   };
 
-  // Log Yield Form Submit
+  // Set Farm Location & Register
+  const handleSetFarmLocation = () => {
+    if (!navigator.geolocation) {
+      showStatusMessage('⚠️ Geolocation is not supported by your browser', 'error');
+      return;
+    }
+
+    setIsLocating(true);
+    setShowLocationSettingsGuide(false);
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        const newLocation = { 
+          latitude: parseFloat(latitude.toFixed(6)), 
+          longitude: parseFloat(longitude.toFixed(6)) 
+        };
+        
+        setSavedLocation(newLocation);
+        localStorage.setItem('agri_last_location', JSON.stringify(newLocation));
+
+        // Sync with backend database
+        try {
+          const response = await fetch('/api/register-farm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, latitude: newLocation.latitude, longitude: newLocation.longitude }),
+          });
+          const resJson = await response.json();
+          if (response.ok && resJson.success) {
+            showStatusMessage('📍 Farm location updated successfully!', 'success');
+          } else {
+            showStatusMessage(resJson.error || 'Failed to register location with backend', 'error');
+          }
+        } catch (e) {
+          showStatusMessage('Saved location locally. Could not sync with database (offline)', 'success');
+        }
+        setIsLocating(false);
+      },
+      (error) => {
+        setIsLocating(false);
+        if (error.code === error.PERMISSION_DENIED) {
+          setShowLocationSettingsGuide(true);
+          showStatusMessage('⚠️ Location permission denied by your phone.', 'error');
+        } else {
+          showStatusMessage('⚠️ Location error: ' + error.message, 'error');
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  };
+
+  // Log Yield
   const handleLogYield = (e) => {
     e.preventDefault();
     const qty = parseFloat(yieldQuantity);
     if (isNaN(qty) || qty <= 0) {
-      showStatusMessage('⚠️ Please enter a valid yield quantity', 'error');
+      showStatusMessage('⚠️ Enter a valid crop yield weight', 'error');
       return;
     }
 
-    const payload = {
-      crop_name: yieldCrop,
-      quantity_kg: qty
-    };
-
-    // Save to offline queue
-    queueOfflineItem('yield', payload);
+    queueOfflineItem('yield', { crop_name: yieldCrop, quantity_kg: qty });
     setYieldQuantity('');
     showStatusMessage(
       isOnline 
-        ? 'Logging yield...' 
-        : '💾 Offline mode: Yield saved locally to phone. Will sync when online.', 
+        ? 'Yield logged successfully!' 
+        : '💾 Saved locally to phone cache. Will sync when online.', 
       'success'
     );
     
-    // Trigger check
     updateQueueStats();
     setRefreshTrigger(prev => prev + 1);
   };
 
-  // Log Expense Form Submit
+  // Log Expense
   const handleLogExpense = (e) => {
     e.preventDefault();
     const amt = parseFloat(expenseAmount);
     if (isNaN(amt) || amt <= 0) {
-      showStatusMessage('⚠️ Please enter a valid expense amount', 'error');
+      showStatusMessage('⚠️ Enter a valid expense value', 'error');
       return;
     }
 
-    const payload = {
-      category: expenseCategory,
-      amount: amt,
-      description: expenseDesc.trim()
-    };
-
-    // Save to offline queue
-    queueOfflineItem('expense', payload);
+    queueOfflineItem('expense', { category: expenseCategory, amount: amt, description: expenseDesc.trim() });
     setExpenseAmount('');
     setExpenseDesc('');
     showStatusMessage(
       isOnline 
-        ? 'Logging expense...' 
-        : '💾 Offline mode: Expense saved locally to phone. Will sync when online.', 
+        ? 'Expense logged successfully!' 
+        : '💾 Saved locally to phone cache. Will sync when online.', 
       'success'
     );
 
-    // Trigger check
     updateQueueStats();
     setRefreshTrigger(prev => prev + 1);
   };
@@ -177,7 +228,6 @@ export default function TrackerDashboard() {
     setUsernameInput('');
   };
 
-  // === CALCULATE REAL-TIME VALUES ===
   // Combine database synced values and pending queue values
   const getCombinedData = () => {
     const combinedYields = [...syncedData.yields];
@@ -210,7 +260,7 @@ export default function TrackerDashboard() {
 
   const { combinedYields, combinedExpenses } = getCombinedData();
 
-  // Compute stats
+  // Compute profit stats
   const totalYieldValue = combinedYields.reduce((acc, y) => {
     const price = marketPrices[y.crop_name] || 0;
     return acc + (y.quantity_kg * price);
@@ -219,46 +269,48 @@ export default function TrackerDashboard() {
   const totalExpenses = combinedExpenses.reduce((acc, e) => acc + e.amount, 0);
   const estimatedProfit = totalYieldValue - totalExpenses;
 
-  // Onboarding screen if user not signed in
+  // Onboarding Screen
   if (!isOnboarded) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center p-4">
-        <div className="w-full max-w-md bg-white border-4 border-black p-8 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white rounded-3xl border border-slate-100 shadow-xl p-8">
           <div className="text-center mb-8">
-            <span className="text-5xl block mb-2">📊</span>
-            <h1 className="text-3xl font-black tracking-tight text-black uppercase">
-              Yield & Expense Tracker
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-emerald-100 rounded-full mb-4">
+              <span className="text-4xl">🌱</span>
+            </div>
+            <h1 className="text-3xl font-bold tracking-tight text-slate-900">
+              AgriNotify
             </h1>
-            <p className="text-black font-bold mt-2 text-sm">
-              Please enter your username to continue
+            <p className="text-slate-500 mt-2 text-sm">
+              Enter your username to access your Yield Tracker
             </p>
           </div>
 
           <form onSubmit={handleOnboard} className="space-y-4">
             <div>
-              <label className="block text-sm font-black uppercase text-black mb-1">
-                Your unique username
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                Farmer Username
               </label>
               <input
                 type="text"
                 value={usernameInput}
                 onChange={(e) => setUsernameInput(e.target.value)}
                 placeholder="e.g. farmer_maria"
-                className="w-full px-4 py-3 border-3 border-black text-black font-bold placeholder:text-gray-400 focus:outline-none focus:bg-yellow-50"
+                className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-lg placeholder:text-slate-400"
                 autoComplete="off"
               />
             </div>
 
             <button
               type="submit"
-              className="w-full py-3.5 bg-black hover:bg-gray-900 active:bg-gray-800 text-white font-black uppercase tracking-wider border-2 border-black transition-colors"
+              className="w-full py-3.5 bg-emerald-700 hover:bg-emerald-800 transition-colors text-white font-bold rounded-2xl shadow-sm text-base"
             >
-              Continue to Tracker
+              Continue to Dashboard
             </button>
           </form>
 
           {message.text && (
-            <div className="mt-4 border-3 border-black p-3 bg-red-100 font-bold text-black text-center">
+            <div className="mt-4 border border-red-200 p-3 bg-red-50 rounded-xl font-medium text-red-800 text-center text-sm">
               {message.text}
             </div>
           )}
@@ -268,27 +320,28 @@ export default function TrackerDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#fafafa] text-black pb-12">
-      {/* High-Contrast Navigation Header */}
-      <nav className="bg-white border-b-4 border-black sticky top-0 z-50">
-        <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
+    <div className="min-h-screen bg-[#f8fafc] text-slate-800 pb-16">
+      
+      {/* Top Header */}
+      <nav className="bg-white border-b border-slate-100 sticky top-0 z-50 shadow-sm">
+        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link href="/" className="flex items-center gap-2">
-              <span className="text-2xl font-bold">🌾</span>
-              <span className="font-black text-xl tracking-tighter uppercase">AgriNotify</span>
+              <span className="text-2xl">🌾</span>
+              <span className="font-bold text-xl text-slate-900 tracking-tight">AgriNotify</span>
             </Link>
-            <span className="hidden sm:inline px-2 py-0.5 text-xs font-black border-2 border-black uppercase bg-yellow-300">
+            <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800 uppercase tracking-wider">
               Tracker
             </span>
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="text-sm font-black border-2 border-black px-3 py-1 bg-[#efefef]">
+            <div className="text-xs font-medium text-slate-600 bg-slate-50 border border-slate-100 rounded-full px-3 py-1.5">
               👤 {username}
             </div>
             <Link 
               href="/"
-              className="text-sm px-4 py-1.5 border-2 border-black font-black uppercase hover:bg-gray-100"
+              className="text-xs px-3.5 py-1.5 border border-slate-200 rounded-full text-slate-600 hover:bg-slate-50 font-medium transition-colors"
             >
               Back to Alerts
             </Link>
@@ -296,289 +349,388 @@ export default function TrackerDashboard() {
         </div>
       </nav>
 
-      <div className="max-w-4xl mx-auto px-4 py-8">
+      <div className="max-w-5xl mx-auto px-4 py-8">
         
-        {/* Status Messages */}
+        {/* Connection status notification */}
         {message.text && (
-          <div className={`mb-6 border-4 border-black p-4 font-black text-base text-center ${
-            message.type === 'success' ? 'bg-green-200' : 'bg-red-200'
+          <div className={`mb-6 border p-4 rounded-2xl font-medium text-sm text-center shadow-sm ${
+            message.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'
           }`}>
             {message.text}
           </div>
         )}
 
-        {/* 1. CONNECTION & SYNC INDICATOR - HIGH CONTRAST */}
-        <div className="border-4 border-black p-4 bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className={`w-6 h-6 border-2 border-black rounded-full flex items-center justify-center font-black text-xs ${
-              isOnline ? 'bg-green-500 text-white' : 'bg-red-500 text-white animate-pulse'
-            }`}>
-              {isOnline ? '✓' : '!'}
-            </div>
-            <div>
-              <div className="font-black uppercase text-lg">
-                Connection Status: {isOnline ? 'ONLINE' : 'OFFLINE'}
-              </div>
-              <p className="text-xs font-bold text-gray-700">
-                {isOnline 
-                  ? 'All local loggings are actively synced to Turso Cloud DB.'
-                  : 'Device is offline. Your logged expenses and yields are saved to local storage.'}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {pendingCount > 0 && (
-              <span className="px-3 py-1 bg-yellow-300 font-black text-xs uppercase border-2 border-black animate-pulse">
-                {pendingCount} PENDING SYNC
-              </span>
-            )}
-            <button
-              onClick={triggerSync}
-              disabled={isSyncing || !isOnline || pendingCount === 0}
-              className={`px-5 py-2.5 font-black uppercase text-sm border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all ${
-                pendingCount > 0 && isOnline
-                  ? 'bg-black text-white hover:bg-gray-800'
-                  : 'bg-gray-200 text-gray-400 cursor-not-allowed border-gray-400 shadow-none'
-              }`}
-            >
-              {isSyncing ? 'Syncing...' : 'Sync Now'}
-            </button>
-          </div>
-        </div>
-
-        {/* 2. REAL-TIME ESTIMATED PROFIT CALCULATOR - SUNLIGHT OPTIMIZED LARGE TEXT */}
-        <div className="border-4 border-black p-6 bg-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] mb-8">
-          <div className="text-center md:text-left mb-4">
-            <h2 className="text-sm font-black uppercase text-gray-600 tracking-wider">Estimated Profit Margin</h2>
-            <div className={`text-5xl md:text-6xl font-black tracking-tighter mt-1 ${
-              estimatedProfit >= 0 ? 'text-green-800' : 'text-red-800'
-            }`}>
-              ${estimatedProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-            <p className="text-xs font-black text-gray-600 mt-1 uppercase">
-              Formula: (Total Yields × Current Price) − Total Expenses
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 border-t-4 border-black pt-4 text-center">
-            <div className="border-r-4 border-black pr-2">
-              <span className="text-xs font-black uppercase text-gray-600">Total Crop Value</span>
-              <div className="text-xl md:text-2xl font-black text-black">
-                +${totalYieldValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-            </div>
-            <div>
-              <span className="text-xs font-black uppercase text-gray-600">Total Expenses</span>
-              <div className="text-xl md:text-2xl font-black text-black">
-                -${totalExpenses.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        {/* Geolocation Guide for iOS / iPhone users */}
+        {showLocationSettingsGuide && (
+          <div className="mb-6 border-2 border-amber-300 p-4 bg-amber-50 rounded-2xl text-slate-800 shadow-sm">
+            <div className="flex items-start gap-3">
+              <span className="text-2xl mt-0.5">📱</span>
+              <div>
+                <h4 className="font-bold text-slate-900">How to Allow Location Access on your iPhone:</h4>
+                <p className="text-xs text-slate-700 mt-1 leading-relaxed">
+                  Your browser or phone has blocked location access. Please follow these steps to enable it:
+                </p>
+                <ol className="list-decimal list-inside text-xs text-slate-700 mt-2 space-y-1 font-medium">
+                  <li>Open your iPhone <strong>Settings</strong> app.</li>
+                  <li>Go to <strong>Privacy & Security</strong> &gt; <strong>Location Services</strong>.</li>
+                  <li>Verify <strong>Location Services</strong> is switched <strong>ON</strong>.</li>
+                  <li>Scroll down to select <strong>Safari Websites</strong> (or your browser) and set it to <strong>"While Using the App"</strong>.</li>
+                  <li>Refresh this webpage and try again.</li>
+                </ol>
+                <button 
+                  onClick={() => setShowLocationSettingsGuide(false)}
+                  className="mt-3 text-xs font-bold text-amber-900 border border-amber-300 bg-white/50 hover:bg-white rounded-lg px-2.5 py-1"
+                >
+                  Dismiss Instructions
+                </button>
               </div>
             </div>
           </div>
-        </div>
+        )}
 
-        {/* 3. MARKET PRICES DISPLAY - HIGH-CONTRAST / LARGE-TEXT */}
-        <div className="mb-8">
-          <h2 className="text-xl font-black uppercase tracking-tight mb-4 flex items-center gap-2">
-            <span>📈</span> Current Market Prices
-          </h2>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            {Object.entries(marketPrices).map(([crop, price]) => (
-              <div 
-                key={crop} 
-                className="border-3 border-black p-4 bg-white text-center shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-              >
-                <div className="text-sm font-black uppercase text-gray-600">{crop}</div>
-                <div className="text-2xl font-black text-black mt-1">
-                  ${price.toFixed(2)}
+        {/* MAIN BODY GRID */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          
+          {/* LEFT & CENTER COLUMN (Tracker Dashboard metrics + forms) */}
+          <div className="lg:col-span-2 space-y-8">
+            
+            {/* Connection badge status */}
+            <div className="bg-white border border-slate-100 rounded-3xl p-5 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <span className={`relative flex h-3 w-3`}>
+                  {isOnline && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>}
+                  <span className={`relative inline-flex rounded-full h-3 w-3 ${isOnline ? 'bg-green-500' : 'bg-amber-500 animate-pulse'}`}></span>
+                </span>
+                <div>
+                  <div className="font-semibold text-slate-900 text-sm">
+                    Mode: {isOnline ? 'Online (Synced)' : 'Offline (Local Cache)'}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {isOnline ? 'Logs sync immediately to Turso cloud storage.' : 'Saves data to your phone. Auto-syncs when connection returns.'}
+                  </div>
                 </div>
-                <div className="text-[10px] font-bold text-gray-500 uppercase">per Kilogram</div>
               </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 4. LOGGING FORMS */}
-        <div className="grid md:grid-cols-2 gap-8 mb-8">
-          
-          {/* Yield Logging Form */}
-          <div className="border-4 border-black p-6 bg-white shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
-            <h3 className="text-lg font-black uppercase border-b-2 border-black pb-2 mb-4 flex items-center gap-2">
-              <span>🌾</span> Log Harvested Yield
-            </h3>
-            <form onSubmit={handleLogYield} className="space-y-4">
-              <div>
-                <label className="block text-xs font-black uppercase text-gray-700 mb-1">
-                  Select Crop type
-                </label>
-                <select
-                  value={yieldCrop}
-                  onChange={(e) => setYieldCrop(e.target.value)}
-                  className="w-full px-3 py-2.5 border-3 border-black font-black bg-white focus:outline-none focus:bg-yellow-50"
+              <div className="flex items-center gap-2">
+                {pendingCount > 0 && (
+                  <span className="px-2.5 py-1 text-[10px] font-bold rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                    {pendingCount} Pending Syncs
+                  </span>
+                )}
+                <button
+                  onClick={triggerSync}
+                  disabled={isSyncing || !isOnline || pendingCount === 0}
+                  className="px-4 py-2 text-xs font-semibold rounded-full border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 disabled:bg-slate-50 disabled:text-slate-300 disabled:cursor-not-allowed transition-all shadow-sm"
                 >
-                  {Object.keys(marketPrices).map(crop => (
-                    <option key={crop} value={crop}>{crop}</option>
-                  ))}
-                </select>
+                  {isSyncing ? 'Syncing...' : 'Sync Now'}
+                </button>
               </div>
+            </div>
 
-              <div>
-                <label className="block text-xs font-black uppercase text-gray-700 mb-1">
-                  Quantity Harvested (Kilograms)
-                </label>
-                <input
-                  type="number"
-                  step="any"
-                  required
-                  value={yieldQuantity}
-                  onChange={(e) => setYieldQuantity(e.target.value)}
-                  placeholder="e.g. 1500"
-                  className="w-full px-3 py-2.5 border-3 border-black font-black placeholder:text-gray-400 focus:outline-none focus:bg-yellow-50"
-                />
-              </div>
+            {/* ESTIMATED PROFIT CARD (Emerald mesh gradient) */}
+            <div className="bg-gradient-to-br from-emerald-950 via-emerald-800 to-green-700 text-white rounded-3xl p-6 shadow-md border border-emerald-950/20 relative overflow-hidden">
+              <div className="absolute right-0 bottom-0 opacity-10 text-9xl select-none font-bold">🌾</div>
+              
+              <div className="relative z-10">
+                <span className="text-xs uppercase font-bold text-emerald-200 tracking-wider">Estimated Profit Margin</span>
+                <div className="text-4xl md:text-5xl font-extrabold tracking-tight mt-1">
+                  ${estimatedProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                <div className="text-[10px] text-emerald-300 uppercase tracking-wider mt-1.5 font-medium">
+                  Formula: (Crop Quantity × Price) − Expenses
+                </div>
 
-              <button
-                type="submit"
-                className="w-full py-3.5 bg-black hover:bg-gray-900 active:bg-gray-800 text-white font-black uppercase border-2 border-black transition-colors"
-              >
-                Log Harvested Yield
-              </button>
-            </form>
-          </div>
-
-          {/* Expense Logging Form */}
-          <div className="border-4 border-black p-6 bg-white shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
-            <h3 className="text-lg font-black uppercase border-b-2 border-black pb-2 mb-4 flex items-center gap-2">
-              <span>💸</span> Log Farm Expense
-            </h3>
-            <form onSubmit={handleLogExpense} className="space-y-4">
-              <div>
-                <label className="block text-xs font-black uppercase text-gray-700 mb-1">
-                  Expense Category
-                </label>
-                <select
-                  value={expenseCategory}
-                  onChange={(e) => setExpenseCategory(e.target.value)}
-                  className="w-full px-3 py-2.5 border-3 border-black font-black bg-white focus:outline-none focus:bg-yellow-50"
-                >
-                  <option value="Seeds">Seeds</option>
-                  <option value="Fertilizer">Fertilizer</option>
-                  <option value="Fuel">Fuel</option>
-                  <option value="Labor">Labor</option>
-                  <option value="Equipment">Equipment</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-black uppercase text-gray-700 mb-1">
-                  Amount (USD)
-                </label>
-                <input
-                  type="number"
-                  step="any"
-                  required
-                  value={expenseAmount}
-                  onChange={(e) => setExpenseAmount(e.target.value)}
-                  placeholder="e.g. 450.00"
-                  className="w-full px-3 py-2.5 border-3 border-black font-black placeholder:text-gray-400 focus:outline-none focus:bg-yellow-50"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-black uppercase text-gray-700 mb-1">
-                  Optional Description
-                </label>
-                <input
-                  type="text"
-                  value={expenseDesc}
-                  onChange={(e) => setExpenseDesc(e.target.value)}
-                  placeholder="e.g. Purchased fertilizer from vendor"
-                  className="w-full px-3 py-2.5 border-3 border-black font-black placeholder:text-gray-400 focus:outline-none focus:bg-yellow-50"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-3.5 bg-black hover:bg-gray-900 active:bg-gray-800 text-white font-black uppercase border-2 border-black transition-colors"
-              >
-                Log Farm Expense
-              </button>
-            </form>
-          </div>
-
-        </div>
-
-        {/* 5. DYNAMIC TRANSACTION LOGS - COLLAPSIBLE OR SIDE-BY-SIDE */}
-        <div className="grid md:grid-cols-2 gap-8">
-          
-          {/* Yields Logs */}
-          <div className="border-4 border-black p-6 bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-            <h3 className="text-base font-black uppercase border-b-2 border-black pb-2 mb-3">
-              🌾 Logged Crop Harvests ({combinedYields.length})
-            </h3>
-            <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
-              {combinedYields.length === 0 ? (
-                <p className="text-xs font-bold text-gray-500 py-4 text-center">No harvest yield logged yet.</p>
-              ) : (
-                combinedYields.map((y) => (
-                  <div 
-                    key={y.id} 
-                    className={`border-2 border-black p-3 flex justify-between items-center ${
-                      y.pending ? 'bg-yellow-50 border-dashed' : 'bg-[#fbfbfb]'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-black text-sm uppercase">
-                        {y.crop_name} {y.pending && <span className="text-[10px] bg-yellow-300 border-2 border-black px-1.5 py-0.5 ml-1 font-black">PENDING</span>}
-                      </div>
-                      <div className="text-xs font-bold text-gray-500">
-                        {new Date(y.logged_at).toLocaleDateString()} at {new Date(y.logged_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-black text-base">{y.quantity_kg.toLocaleString()} kg</div>
-                      <div className="text-[10px] font-bold text-gray-600">
-                        Est. Value: ${(y.quantity_kg * (marketPrices[y.crop_name] || 0)).toFixed(2)}
-                      </div>
+                <div className="grid grid-cols-2 gap-4 mt-6 pt-5 border-t border-emerald-700/60 text-center sm:text-left">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-emerald-300">Total Crop Value</span>
+                    <div className="text-lg md:text-xl font-bold mt-0.5">
+                      +${totalYieldValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* Expenses Logs */}
-          <div className="border-4 border-black p-6 bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-            <h3 className="text-base font-black uppercase border-b-2 border-black pb-2 mb-3">
-              💸 Logged Expenses ({combinedExpenses.length})
-            </h3>
-            <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
-              {combinedExpenses.length === 0 ? (
-                <p className="text-xs font-bold text-gray-500 py-4 text-center">No expenses logged yet.</p>
-              ) : (
-                combinedExpenses.map((e) => (
-                  <div 
-                    key={e.id} 
-                    className={`border-2 border-black p-3 flex justify-between items-center ${
-                      e.pending ? 'bg-yellow-50 border-dashed' : 'bg-[#fbfbfb]'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-black text-sm uppercase">
-                        {e.category} {e.pending && <span className="text-[10px] bg-yellow-300 border-2 border-black px-1.5 py-0.5 ml-1 font-black">PENDING</span>}
-                      </div>
-                      <div className="text-xs font-bold text-gray-500">
-                        {e.description || 'No description'} • {new Date(e.logged_at).toLocaleDateString()}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-black text-base">-${e.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                  <div className="border-l border-emerald-700/60 pl-4">
+                    <span className="text-[10px] uppercase font-bold text-emerald-300">Total Expenses</span>
+                    <div className="text-lg md:text-xl font-bold mt-0.5">
+                      -${totalExpenses.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                ))
-              )}
+                </div>
+              </div>
             </div>
+
+            {/* MARKET PRICES */}
+            <div>
+              <h3 className="text-sm font-bold uppercase tracking-wider text-slate-500 mb-3 pl-1">
+                📈 Local Crop Market Prices (per kg)
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                {Object.entries(marketPrices).length > 0 ? (
+                  Object.entries(marketPrices).map(([crop, price]) => (
+                    <div key={crop} className="bg-white border border-slate-100 rounded-2xl p-4 shadow-sm text-center">
+                      <div className="text-xs font-bold text-slate-500 uppercase">{crop}</div>
+                      <div className="text-lg font-extrabold text-slate-900 mt-1">${price.toFixed(2)}</div>
+                      <div className="text-[9px] font-bold text-emerald-600 bg-emerald-50 rounded-full px-1.5 py-0.5 mt-1.5 inline-block">
+                        Market Price
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="col-span-5 bg-white border border-slate-100 rounded-2xl p-4 text-center text-xs text-slate-500">
+                    Fetching crop prices...
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* LOGGING FORMS WITH SWITCHER TABS */}
+            <div className="bg-white border border-slate-100 rounded-3xl shadow-sm overflow-hidden">
+              <div className="flex border-b border-slate-100 bg-slate-50/50">
+                <button
+                  onClick={() => setActiveFormTab('yield')}
+                  className={`flex-1 py-4 text-center text-xs font-bold uppercase tracking-wider transition-all border-b-2 ${
+                    activeFormTab === 'yield' 
+                      ? 'border-emerald-600 text-emerald-700 bg-white' 
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  🌾 Log Harvested Yield
+                </button>
+                <button
+                  onClick={() => setActiveFormTab('expense')}
+                  className={`flex-1 py-4 text-center text-xs font-bold uppercase tracking-wider transition-all border-b-2 ${
+                    activeFormTab === 'expense' 
+                      ? 'border-emerald-600 text-emerald-700 bg-white' 
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  💸 Log Farm Expense
+                </button>
+              </div>
+
+              <div className="p-6">
+                {activeFormTab === 'yield' ? (
+                  <form onSubmit={handleLogYield} className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                          Crop Type
+                        </label>
+                        <select
+                          value={yieldCrop}
+                          onChange={(e) => setYieldCrop(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-sm"
+                        >
+                          {Object.keys(marketPrices).map(crop => (
+                            <option key={crop} value={crop}>{crop}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                          Quantity Harvested (kg)
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          required
+                          value={yieldQuantity}
+                          onChange={(e) => setYieldQuantity(e.target.value)}
+                          placeholder="e.g. 1200"
+                          className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm placeholder:text-slate-400"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full sm:w-auto px-6 py-3 bg-emerald-700 hover:bg-emerald-800 transition-colors text-white font-bold rounded-xl text-xs uppercase tracking-wider shadow-sm"
+                    >
+                      Save Yield
+                    </button>
+                  </form>
+                ) : (
+                  <form onSubmit={handleLogExpense} className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                          Expense Category
+                        </label>
+                        <select
+                          value={expenseCategory}
+                          onChange={(e) => setExpenseCategory(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-sm"
+                        >
+                          <option value="Seeds">Seeds</option>
+                          <option value="Fertilizer">Fertilizer</option>
+                          <option value="Fuel">Fuel</option>
+                          <option value="Labor">Labor</option>
+                          <option value="Equipment">Equipment</option>
+                          <option value="Other">Other</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                          Amount (USD)
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          required
+                          value={expenseAmount}
+                          onChange={(e) => setExpenseAmount(e.target.value)}
+                          placeholder="e.g. 250.00"
+                          className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm placeholder:text-slate-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                          Optional Description
+                        </label>
+                        <input
+                          type="text"
+                          value={expenseDesc}
+                          onChange={(e) => setExpenseDesc(e.target.value)}
+                          placeholder="e.g. Fertilizer purchase"
+                          className="w-full px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm placeholder:text-slate-400"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full sm:w-auto px-6 py-3 bg-emerald-700 hover:bg-emerald-800 transition-colors text-white font-bold rounded-xl text-xs uppercase tracking-wider shadow-sm"
+                    >
+                      Save Expense
+                    </button>
+                  </form>
+                )}
+              </div>
+            </div>
+
+          </div>
+
+          {/* RIGHT COLUMN (Collapsible Lists / Transaction logs) */}
+          <div className="space-y-8">
+            
+            {/* LOCATION CARD */}
+            <div className="bg-white border border-slate-100 rounded-3xl p-5 shadow-sm">
+              <h4 className="font-bold text-sm text-slate-900 uppercase tracking-tight mb-3">📍 Farm Coordinates</h4>
+              {savedLocation ? (
+                <div className="p-3 bg-emerald-50/50 rounded-2xl border border-emerald-100/50 text-xs font-semibold text-slate-700">
+                  Latitude: {savedLocation.latitude}° N<br />
+                  Longitude: {savedLocation.longitude}° E
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 leading-normal mb-3">No location registered. Please set location for crop details.</p>
+              )}
+              
+              <button
+                onClick={handleSetFarmLocation}
+                disabled={isLocating}
+                className="w-full mt-3 py-2.5 bg-slate-100 hover:bg-slate-200 disabled:bg-slate-50 text-slate-700 disabled:text-slate-300 font-bold rounded-xl text-xs uppercase tracking-wider transition-colors border border-slate-200/50"
+              >
+                {isLocating ? 'Locating...' : 'Set Farm Location'}
+              </button>
+            </div>
+
+            {/* DYNAMIC LOGS CONTAINER */}
+            <div className="bg-white border border-slate-100 rounded-3xl shadow-sm overflow-hidden">
+              <div className="flex border-b border-slate-100 bg-slate-50/50">
+                <button
+                  onClick={() => setActiveLogTab('yield')}
+                  className={`flex-1 py-3 text-center text-xs font-bold transition-all border-b-2 ${
+                    activeLogTab === 'yield' 
+                      ? 'border-emerald-600 text-emerald-700 bg-white' 
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  🌾 Yield Logs ({combinedYields.length})
+                </button>
+                <button
+                  onClick={() => setActiveLogTab('expense')}
+                  className={`flex-1 py-3 text-center text-xs font-bold transition-all border-b-2 ${
+                    activeLogTab === 'expense' 
+                      ? 'border-emerald-600 text-emerald-700 bg-white' 
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  💸 Expense Logs ({combinedExpenses.length})
+                </button>
+              </div>
+
+              <div className="p-5 max-h-[380px] overflow-y-auto space-y-3">
+                {activeLogTab === 'yield' ? (
+                  combinedYields.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-6 text-center font-medium">No harvested crop yields logged.</p>
+                  ) : (
+                    combinedYields.map(y => (
+                      <div 
+                        key={y.id} 
+                        className={`p-3.5 border rounded-2xl flex justify-between items-center transition-all ${
+                          y.pending 
+                            ? 'bg-amber-50/60 border-dashed border-amber-300' 
+                            : 'bg-slate-50/50 border-slate-100 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div>
+                          <div className="font-bold text-xs uppercase text-slate-800 flex items-center gap-1.5">
+                            {y.crop_name}
+                            {y.pending && (
+                              <span className="text-[8px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 border border-amber-200 text-amber-800 uppercase tracking-wider animate-pulse">
+                                Pending
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-slate-500">
+                            {new Date(y.logged_at).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-extrabold text-sm text-slate-800">{y.quantity_kg.toLocaleString()} kg</div>
+                          <div className="text-[9px] font-semibold text-slate-500">
+                            Est. Value: ${(y.quantity_kg * (marketPrices[y.crop_name] || 0)).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )
+                ) : (
+                  combinedExpenses.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-6 text-center font-medium">No farm expenses logged.</p>
+                  ) : (
+                    combinedExpenses.map(e => (
+                      <div 
+                        key={e.id} 
+                        className={`p-3.5 border rounded-2xl flex justify-between items-center transition-all ${
+                          e.pending 
+                            ? 'bg-amber-50/60 border-dashed border-amber-300' 
+                            : 'bg-slate-50/50 border-slate-100 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div>
+                          <div className="font-bold text-xs uppercase text-slate-800 flex items-center gap-1.5">
+                            {e.category}
+                            {e.pending && (
+                              <span className="text-[8px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 border border-amber-200 text-amber-800 uppercase tracking-wider animate-pulse">
+                                Pending
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-slate-500 leading-normal">
+                            {e.description || 'No description'} • {new Date(e.logged_at).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <div className="text-right font-extrabold text-sm text-slate-800">
+                          -${e.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                      </div>
+                    ))
+                  )
+                )}
+              </div>
+            </div>
+
           </div>
 
         </div>

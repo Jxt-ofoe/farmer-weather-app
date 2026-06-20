@@ -21,8 +21,8 @@ export const metadata: Metadata = {
     title: "AgriNotify",
   },
   icons: {
-    icon: "/icon-192x192.png",
-    shortcut: "/icon-192x192.png",
+    icon: "/favicon.ico",
+    shortcut: "/favicon.ico",
     apple: "/icon-192x192.png",
   },
   formatDetection: {

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import Pusher from 'pusher-js';
 
 // Tailwind-based minimalist agricultural UI
@@ -430,8 +431,14 @@ export default function AgriNotificationApp() {
 
           <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center text-sm text-slate-600">
-              <span className="font-medium">{username}</span>
+              <span className="font-medium mr-2">{username}</span>
             </div>
+            <Link
+              href="/tracker"
+              className="text-sm px-4 py-1.5 rounded-full border border-slate-200 hover:bg-slate-100 active:bg-slate-200 text-slate-700 transition-colors font-medium"
+            >
+              📊 Tracker
+            </Link>
             <button
               onClick={handleLogout}
               className="text-sm px-4 py-1.5 rounded-full border border-slate-200 hover:bg-slate-100 active:bg-slate-200 text-slate-600 transition-colors"

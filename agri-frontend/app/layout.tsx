@@ -20,6 +20,11 @@ export const metadata: Metadata = {
     statusBarStyle: "default",
     title: "AgriNotify",
   },
+  icons: {
+    icon: "/icon-192x192.png",
+    shortcut: "/icon-192x192.png",
+    apple: "/icon-192x192.png",
+  },
   formatDetection: {
     telephone: false,
   },
